@@ -6,6 +6,7 @@ import * as StellarSdk from '@stellar/stellar-sdk';
 import { getJwtVerificationSecrets } from '../config/env.config';
 import { NonceStoreService } from './nonce-store.service';
 import { JWT_ALGORITHM } from '../config/env.config';
+import { RefreshTokenStoreService, ACCESS_TOKEN_TTL_SECONDS } from './refresh-token-store.service';
 
 const CHALLENGE_PREFIX = 'Sign this message to authenticate with TrustFlow: ';
 

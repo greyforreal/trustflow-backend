@@ -55,3 +55,32 @@ export function isValidCidV1Raw(cid: string): boolean {
   if (cid.length !== CIDV1_RAW_SHA256_LENGTH) return false;
   return /^b[a-z2-7]+$/.test(cid);
 }
+
+
+/**
+ * Issue #735: CID Computation Limitation Documentation
+ * 
+ * IMPORTANT LIMITATION:
+ * 
+ * computeCidV1Raw() assumes content fits in a single IPFS block (raw codec).
+ * This works correctly for small files but may produce mismatches with provider-computed
+ * CIDs for larger files that get chunked into multi-block UnixFS DAGs.
+ * 
+ * Current MAX_BYTES = 10 MB, but IPFS typically chunks at ~256KB default.
+ * 
+ * Known behavior:
+ * - Files < 256KB: Usually single block, CID matches providers
+ * - Files > 256KB: May be chunked, CID may not match provider-returned hash
+ * 
+ * Mitigation needed:
+ * 1. Test with real providers at various sizes (1KB, 256KB, 1MB, 5MB, 10MB)
+ * 2. Either lower MAX_BYTES to safe ceiling OR implement full UnixFS chunking
+ * 3. Consider removing hard CID comparison in favor of provider.verify()
+ * 
+ * Related methods that depend on this assumption:
+ * - PinataProvider.sendPin() - compares response.IpfsHash !== cid
+ * - InfuraProvider.sendPin() - similar comparison
+ * - Web3StorageProvider.sendPin() - similar comparison
+ * 
+ * TODO: Complete spike test with real provider credentials and document findings
+ */

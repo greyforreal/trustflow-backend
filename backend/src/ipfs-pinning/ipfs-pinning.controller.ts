@@ -119,3 +119,24 @@ export class IpfsPinningController {
     return this.pinningService.unpin(cid);
   }
 }
+
+  @Post('providers/:name/health/reset')
+  @UseGuards(AdminGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Reset provider health status (admin only)',
+    description:
+      'Clears accumulated health metrics for a provider, allowing it to recover from FAILED status. ' +
+      'Useful after manual recovery or to reset after a temporary outage.',
+  })
+  @ApiParam({ name: 'name', example: 'pinata', description: 'Provider name' })
+  @ApiResponse({ status: 200, description: 'Provider health reset successfully' })
+  @ApiResponse({ status: 401, description: 'Unauthorized — valid JWT required' })
+  @ApiResponse({ status: 403, description: 'Forbidden — admin privileges required' })
+  async resetProviderHealth(@Param('name') name: string) {
+    if (!this.providerHealth) {
+      return { error: 'Provider health service not available' };
+    }
+    await this.providerHealth.resetProviderHealth(name);
+    return { message: `Health metrics reset for provider: ${name}` };
+  }

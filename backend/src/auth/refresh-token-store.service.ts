@@ -60,9 +60,22 @@ export class RefreshTokenStoreService {
     address: string,
   ): Promise<{ valid: boolean; newToken?: string; shouldRevoke?: boolean }> {
     const key = this.tokenKey(token);
+    const tombstoneKey = this.tombstoneKey(token);
 
     if (this.redis) {
       try {
+        // Check if token is in tombstone (already rotated)
+        const tombstone = await this.redis.get(tombstoneKey);
+        if (tombstone) {
+          // Token reuse detected! Revoke entire family
+          const parsed = JSON.parse(tombstone);
+          this.logger.warn(
+            `Refresh token reuse detected for ${this.maskAddress(address)}, revoking family ${parsed.familyId}`,
+          );
+          await this.revokeTokenFamily(address, parsed.familyId);
+          return { valid: false, shouldRevoke: true };
+        }
+
         const data = await this.redis.getdel(key);
         if (!data) {
           return { valid: false };
@@ -75,6 +88,9 @@ export class RefreshTokenStoreService {
           );
           return { valid: false };
         }
+
+        // Store tombstone for reuse detection (5 min window)
+        await this.redis.set(tombstoneKey, data, 'EX', 300);
 
         const newToken = crypto.randomBytes(32).toString('hex');
         const newKey = this.tokenKey(newToken);
@@ -166,6 +182,10 @@ export class RefreshTokenStoreService {
 
   private tokenKey(token: string): string {
     return `refresh-token:${token}`;
+  }
+
+  private tombstoneKey(token: string): string {
+    return `refresh-tombstone:${token}`;
   }
 
   private familyKey(address: string, familyId: string): string {
