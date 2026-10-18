@@ -22,8 +22,12 @@ interface DiscordWebhookPayload {
 export class DiscordService {
   private readonly logger = new SanitizedLogger(DiscordService.name);
   private readonly webhookUrl: string;
-  /** Permanent failures that should not be retried. */
+  /** Permanent failures that should not be retried. Maximum 1000 entries with TTL-based eviction. */
   private readonly failedNotifications = new Map<string, { error: string; timestamp: string }>();
+  /** Maximum number of failed notifications to retain. */
+  private readonly MAX_FAILED_NOTIFICATIONS = 1000;
+  /** TTL for failed notifications in milliseconds (7 days). */
+  private readonly FAILED_NOTIFICATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
   constructor(@Optional() private readonly metrics?: MetricsService) {
     this.webhookUrl = config.DISCORD_WEBHOOK_URL || '';
@@ -103,11 +107,9 @@ export class DiscordService {
       this.metrics?.increment('discord_notifications_sent_total');
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.failedNotifications.set(disputeId, {
-        error: message,
-        timestamp: new Date().toISOString(),
-      });
+      this.recordFailedNotification(disputeId, message);
       this.metrics?.increment('discord_notifications_failed_total', { reason: 'permanent' });
+      this.metrics?.increment('discord_notifications_dead_lettered_total');
       throw error; // Re-throw so caller knows delivery ultimately failed
     }
   }
@@ -172,7 +174,61 @@ export class DiscordService {
 
   /** Returns the current dead-letter list of permanently failed notifications. */
   getFailedNotifications(): Map<string, { error: string; timestamp: string }> {
+    this.evictExpiredNotifications();
     return this.failedNotifications;
+  }
+
+  /**
+   * Record a failed notification with size cap and TTL enforcement.
+   * Evicts oldest entries when MAX_FAILED_NOTIFICATIONS is exceeded.
+   */
+  private recordFailedNotification(disputeId: string, error: string): void {
+    // Add new failure
+    this.failedNotifications.set(disputeId, {
+      error,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Enforce size cap by evicting oldest entries
+    if (this.failedNotifications.size > this.MAX_FAILED_NOTIFICATIONS) {
+      const entries = Array.from(this.failedNotifications.entries()).sort(
+        (a, b) => new Date(a[1].timestamp).getTime() - new Date(b[1].timestamp).getTime(),
+      );
+
+      const toDelete = entries.slice(
+        0,
+        this.failedNotifications.size - this.MAX_FAILED_NOTIFICATIONS,
+      );
+      toDelete.forEach(([key]) => this.failedNotifications.delete(key));
+
+      this.logger.debug(
+        `Evicted ${toDelete.length} oldest failed notifications to maintain size cap of ${this.MAX_FAILED_NOTIFICATIONS}`,
+      );
+    }
+  }
+
+  /**
+   * Remove expired failed notifications based on TTL.
+   * Called automatically when getFailedNotifications() is invoked.
+   */
+  private evictExpiredNotifications(): void {
+    const now = Date.now();
+    const expired: string[] = [];
+
+    for (const [disputeId, record] of this.failedNotifications.entries()) {
+      const age = now - new Date(record.timestamp).getTime();
+      if (age > this.FAILED_NOTIFICATION_TTL_MS) {
+        expired.push(disputeId);
+      }
+    }
+
+    expired.forEach(id => this.failedNotifications.delete(id));
+
+    if (expired.length > 0) {
+      this.logger.debug(
+        `Evicted ${expired.length} expired failed notifications (TTL: ${this.FAILED_NOTIFICATION_TTL_MS / (24 * 60 * 60 * 1000)} days)`,
+      );
+    }
   }
 
   private truncateAddress(address: string): string {

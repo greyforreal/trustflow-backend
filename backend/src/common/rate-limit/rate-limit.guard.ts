@@ -13,10 +13,11 @@ import { JwtService } from '@nestjs/jwt';
 import { Redis, Result } from 'ioredis';
 import { randomUUID } from 'crypto';
 import { REDIS_CLIENT } from '../redis/redis.module';
-import { config } from '../config/env.config';
-import { MetricsService } from '../monitoring/metrics.service';
+import { config, getJwtVerificationSecrets } from '../../config/env.config';
+import { MetricsService } from '../../monitoring/metrics.service';
 import { RateTier, RATE_LIMIT_TIERS, HIGH_REPUTATION_THRESHOLD } from './rate-tiers';
-import { RateLimitGuard as BaseRateLimitGuard, RateLimitIdentity, RateLimitRequest } from './rate-limit.guard';
+import './rate-limit.d';
+import { getJwtVerificationSecrets } from '../auth/jwt-secrets';
 
 const DEFAULT_POINTS = 100;
 const DEFAULT_DURATION = 60;
@@ -25,7 +26,18 @@ const REDIS_ERROR_LOG_INTERVAL_MS = 30_000;
 /** `Retry-After` advertised when a `deny` policy rejects a request during a Redis outage. */
 const REDIS_ERROR_RETRY_AFTER_SECONDS = 5;
 
+export type RateLimitIdentity = {
+  scope: 'ip' | 'wallet';
+  value: string;
+};
+
 /** Minimal shape of the HTTP request object that rate-limiting reads from. */
+export interface RateLimitRequest {
+export interface RateLimitIdentity {
+  scope: 'ip' | 'wallet';
+  value: string;
+}
+
 interface RateLimitRequest {
   ip?: string;
   method?: string;
@@ -95,7 +107,7 @@ if tokens >= 1 then
   tokens = tokens - 1
   redis.call('HSET', bucket_key, 'tokens', tokens, 'updatedAt', now)
   redis.call('PEXPIRE', bucket_key, bucket_ttl_ms)
-  return {1, 0}
+  return {1, math.floor(tokens)}
 end
 
 redis.call('HSET', bucket_key, 'tokens', tokens, 'updatedAt', now)
@@ -152,12 +164,14 @@ function getTierConfig(
 export class RateLimitGuard implements CanActivate {
   private readonly logger = new SanitizedLogger(RateLimitGuard.name);
   private readonly reflector: Reflector;
+  private readonly jwtService = new JwtService();
 
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis | null,
+    private readonly jwtService: JwtService,
     reflector: Reflector,
     @Optional() private readonly metrics?: MetricsService,
-    @Optional() private readonly reputationService?: import('../reputation/reputation.service').ReputationService,
+    @Optional() private readonly reputationService?: import('../../reputation/reputation.service').ReputationService,
   ) {
     this.reflector = reflector;
     // Register the Lua script once at startup
@@ -282,7 +296,7 @@ export class RateLimitGuard implements CanActivate {
 
     // Response-time headers: set on the response object after the guard passes
     const response = context.switchToHttp().getResponse();
-    this.setRateLimitHeaders(response, tier, tierConfig);
+    this.setRateLimitHeaders(response, tier, tierConfig, decisions);
 
     return true;
   }
@@ -479,18 +493,59 @@ export class RateLimitGuard implements CanActivate {
 
   /**
    * Sets RateLimit-* headers on the response based on the tier and bucket state.
+   * With multiple identities per request (e.g. IP + wallet), the tighter (lower-remaining)
+   * decision drives the advertised headers so the client paces itself against whichever
+   * bucket is closer to exhaustion.
    */
-  private setRateLimitHeaders(response: any, tier: keyof typeof RATE_LIMIT_TIERS, decisions: Array<[number, number]>): void {
-    const tierConfig = RATE_TIER_CONFIGS[tier];
-    if (!tierConfig) return;
+  private setRateLimitHeaders(
+    response: any,
+    tier: keyof typeof RATE_LIMIT_TIERS,
+    tierConfigOrDecisions: RateTierConfig | Array<[number, number]>,
+    maybeDecisions?: Array<[number, number]>,
+  ): void {
+    let tierConfig: RateTierConfig;
+    let decisions: Array<[number, number]>;
 
-    const [allowed, retryAfter] = decisions?.[0] ?? [1, 0];
-    const remaining = allowed === 1 ? Math.max(0, tierConfig.points - 1) : 0;
+    if (Array.isArray(tierConfigOrDecisions)) {
+      decisions = tierConfigOrDecisions;
+      tierConfig = RATE_TIER_CONFIGS[tier] ?? { points: DEFAULT_POINTS, duration: DEFAULT_DURATION };
+    } else {
+      tierConfig = tierConfigOrDecisions ?? RATE_TIER_CONFIGS[tier] ?? { points: DEFAULT_POINTS, duration: DEFAULT_DURATION };
+      decisions = maybeDecisions ?? [];
+    }
+
+    if (!tierConfig || !response?.setHeader) return;
+
+    let minRemaining = tierConfig.points;
+    let maxReset = 0;
+
+    if (decisions && decisions.length > 0) {
+      for (const [allowed, value] of decisions) {
+        if (allowed === 1) {
+          // When allowed, the Lua script returns the remaining tokens in the bucket.
+          // Pick the tighter (lower remaining) of all identities.
+          const remaining = Math.max(0, value);
+          if (remaining < minRemaining) {
+            minRemaining = remaining;
+          }
+        } else {
+          // When rejected, remaining is 0 and value is the retryAfter in seconds.
+          minRemaining = 0;
+          if (value > maxReset) {
+            maxReset = value;
+          }
+        }
+      }
+    } else {
+      minRemaining = Math.max(0, tierConfig.points - 1);
+    }
 
     response.setHeader('RateLimit-Limit', String(tierConfig.points));
-    response.setHeader('RateLimit-Remaining', String(remaining));
-    response.setHeader('RateLimit-Reset', String(Math.ceil(retryAfter)));
+    response.setHeader('RateLimit-Remaining', String(minRemaining));
+    response.setHeader('RateLimit-Reset', String(Math.ceil(maxReset)));
 
-    this.logger.debug(`Rate limit headers set — tier: ${tier}, limit: ${tierConfig.points}, remaining: ${remaining}, reset: ${Math.ceil(retryAfter)}s`);
+    this.logger.debug(
+      `Rate limit headers set — tier: ${tier}, limit: ${tierConfig.points}, remaining: ${minRemaining}, reset: ${Math.ceil(maxReset)}s`,
+    );
   }
 }

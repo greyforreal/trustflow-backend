@@ -762,20 +762,7 @@ export class DisputeSagaService implements OnModuleInit {
           const txId = await this.arweaveArchiveService.archiveDispute(saga);
           if (txId) {
             saga.arweaveTxId = txId;
-            // Persist the transaction ID to Redis so it survives restarts
-            if (this.redis) {
-              try {
-                await this.redis.set(
-                  `saga:arweave:${saga.sagaId}`,
-                  txId,
-                );
-              } catch (err) {
-                this.logger.error(
-                  `Failed to persist Arweave txId to Redis for saga ${saga.sagaId}`,
-                  err,
-                );
-              }
-            }
+            await this.persistSaga(saga);
             this.logger.log(
               `Arweave txId ${txId} recorded for completed saga ${saga.sagaId}`,
             );

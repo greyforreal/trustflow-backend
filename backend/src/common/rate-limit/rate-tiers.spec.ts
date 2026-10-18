@@ -93,37 +93,59 @@ describe('RateLimitGuard with dynamic tiers', () => {
   });
 
   describe('setRateLimitHeaders', () => {
-    it('should set RateLimit-* headers on response', () => {
+    it('should set RateLimit-* headers on response reflecting bucket state', () => {
       const mockResponse = {
         setHeader: jest.fn(),
       };
 
-      const decisions: Array<[number, number]> = [[1, 0]];
+      const decisions: Array<[number, number]> = [[1, 299]];
 
-      guard['setRateLimitHeaders'](mockResponse, RateTier.AUTHENTICATED, decisions);
+      guard['setRateLimitHeaders'](mockResponse, RateTier.AUTHENTICATED, RATE_TIER_CONFIGS[RateTier.AUTHENTICATED], decisions);
 
       expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Limit', '300');
       expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Remaining', '299');
       expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Reset', '0');
     });
 
-    it('should handle rate limit exceeded case', () => {
+    it('should decrease RateLimit-Remaining across consecutive requests', () => {
+      const mockResponse = {
+        setHeader: jest.fn(),
+      };
+
+      guard['setRateLimitHeaders'](mockResponse, RateTier.AUTHENTICATED, RATE_TIER_CONFIGS[RateTier.AUTHENTICATED], [[1, 250]]);
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Remaining', '250');
+
+      guard['setRateLimitHeaders'](mockResponse, RateTier.AUTHENTICATED, RATE_TIER_CONFIGS[RateTier.AUTHENTICATED], [[1, 249]]);
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Remaining', '249');
+    });
+
+    it('should use the tighter (lower-remaining) decision when multiple identities exist', () => {
+      const mockResponse = {
+        setHeader: jest.fn(),
+      };
+
+      // IP bucket has 280 tokens remaining, wallet bucket has 150 tokens remaining
+      const decisions: Array<[number, number]> = [[1, 280], [1, 150]];
+
+      guard['setRateLimitHeaders'](mockResponse, RateTier.AUTHENTICATED, RATE_TIER_CONFIGS[RateTier.AUTHENTICATED], decisions);
+
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Limit', '300');
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Remaining', '150');
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Reset', '0');
+    });
+
+    it('should handle rate limit exceeded case and reflect script retryAfter', () => {
       const mockResponse = {
         setHeader: jest.fn(),
       };
 
       const decisions: Array<[number, number]> = [[0, 30]]; // denied, retry after 30s
 
-      guard['setRateLimitHeaders'](mockResponse, RateTier.ANONYMOUS, decisions);
+      guard['setRateLimitHeaders'](mockResponse, RateTier.ANONYMOUS, RATE_TIER_CONFIGS[RateTier.ANONYMOUS], decisions);
 
       expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Limit', '60');
-      // When denied, remaining should be 0
-      const remainingCall = mockResponse.setHeader.mock.calls.find(
-        ([key]) => key === 'RateLimit-Remaining'
-      );
-      if (remainingCall) {
-        expect(remainingCall[1]).toBe('0');
-      }
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Remaining', '0');
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('RateLimit-Reset', '30');
     });
   });
 });

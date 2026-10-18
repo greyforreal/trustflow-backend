@@ -18,7 +18,19 @@ import {
 } from '../common/redis/redis-transaction';
 import { MetricsService } from '../monitoring/metrics.service';
 import { OutboxService } from '../outbox/outbox.service';
+import { AuditService } from '../audit/audit.service';
 import { config } from '../config/env.config';
+
+const ESCROW_KEY_PREFIX = 'escrow:';
+export const ESCROWS_INDEX_KEY = 'escrows:index';
+const ESCROWS_BY_DEPOSITOR_PREFIX = 'escrows:by-depositor:';
+const ESCROWS_BY_CONTRACT_PREFIX = 'escrow:contract:';
+
+/** Emitted (see `/metrics`) every time a call falls back to the in-memory store. */
+export const ESCROW_PERSISTENCE_FALLBACK_METRIC = 'escrow_persistence_fallback_total';
+
+/** Emitted when a Redis transaction fails integrity checks and cannot be safely fallen back from. */
+export const ESCROW_TRANSACTION_INCONSISTENT_METRIC = 'escrow_transaction_inconsistent_total';
 
 export const ESCROW_EVENTS = {
   ESCROW_CREATED: 'escrow.created',
@@ -388,7 +400,7 @@ export class EscrowService implements OnModuleInit {
           beforeState,
           afterState: escrow,
         })
-        .catch(err => this.logger.error('Failed to write audit log', err));
+        .catch((err: unknown) => this.logger.error('Failed to write audit log', err instanceof Error ? err.stack : String(err)));
     }
 
     return escrow;
@@ -445,7 +457,7 @@ export class EscrowService implements OnModuleInit {
           beforeState,
           afterState: escrow,
         })
-        .catch(err => this.logger.error('Failed to write audit log', err));
+        .catch((err: unknown) => this.logger.error('Failed to write audit log', err instanceof Error ? err.stack : String(err)));
     }
 
     return escrow;
@@ -534,5 +546,48 @@ export class EscrowService implements OnModuleInit {
     }
 
     return result;
+  }
+
+  private escrowKey(id: string): string {
+    return `${ESCROW_KEY_PREFIX}${id}`;
+  }
+
+  private depositorKey(address: string): string {
+    return `${ESCROWS_BY_DEPOSITOR_PREFIX}${address}`;
+  }
+
+  private contractKey(contractEscrowId: string): string {
+    return `${ESCROWS_BY_CONTRACT_PREFIX}${contractEscrowId}`;
+  }
+
+  private async fetchMany(ids: string[]): Promise<Escrow[]> {
+    if (ids.length === 0) return [];
+    const raw = await this.redis!.mget(...ids.map(id => this.escrowKey(id)));
+    return raw.filter((r): r is string => r !== null).map(r => JSON.parse(r) as Escrow);
+  }
+
+  private logFallback(operation: string, err: unknown): void {
+    this.metrics.increment(ESCROW_PERSISTENCE_FALLBACK_METRIC, { operation });
+    this.logger.error(
+      `Redis unavailable for escrow.${operation}, falling back to per-instance memory ` +
+        '(multi-instance state will diverge until Redis recovers)',
+      err instanceof Error ? err.stack : String(err),
+    );
+  }
+
+  private rethrowIfInconsistent(operation: string, id: string, err: unknown): void {
+    if (isTransactionIntegrityError(err)) {
+      this.metrics.increment(ESCROW_TRANSACTION_INCONSISTENT_METRIC, {
+        operation,
+        reason: err.reason,
+      });
+      this.logger.error(
+        `Redis transaction integrity failure in escrow.${operation} for id=${id}: ${err.message}`,
+        err instanceof Error ? err.stack : String(err),
+      );
+      throw new ServiceUnavailableException(
+        `Redis transaction integrity failure in escrow.${operation}: ${err.message}`,
+      );
+    }
   }
 }

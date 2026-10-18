@@ -70,11 +70,14 @@ describe('log sanitization audit', () => {
     const offenders: string[] = [];
     // A body is only ever unsafe if it is logged by reference; `req.body` / `request.body`
     // reaching a log argument is the pattern to block.
+    // The 'headers' pattern must match actual header object variables (req.headers, response.headers)
+    // not just the word 'headers' appearing in a string literal or comment.
     const bodyPatterns = [
       /logger\.\w+\([^)]*\breq\.body\b/,
       /logger\.\w+\([^)]*\brequest\.body\b/,
-      /logger\.\w+\([^)]*\bheaders\b/,
-      /logger\.\w+\([^)]*req\.headers/,
+      /logger\.\w+\([^)]*\breq\.headers\b/,
+      /logger\.\w+\([^)]*\bresponse\.headers\b/,
+      /logger\.\w+\([^)]*\bheaders\s*[,)]/,
     ];
 
     for (const file of sourceFiles) {

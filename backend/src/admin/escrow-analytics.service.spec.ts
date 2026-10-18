@@ -46,5 +46,25 @@ describe('EscrowAnalyticsService', () => {
       expect(result.pagination.cursor).toBeDefined();
       expect(result.pagination.hasMore).toBeDefined();
     });
+
+    it('resolves without throwing when Redis is available but escrowService is not injected', async () => {
+      const mockRedis = {
+        get: jest.fn((key: string) => {
+          if (key === 'escrow:total_count') return Promise.resolve('2');
+          if (key === 'escrow:total_value_xlm') return Promise.resolve('500');
+          return Promise.resolve('0');
+        }),
+        zrangebyscore: jest.fn().mockResolvedValue(['escrow-1', 'escrow-2']),
+        zscore: jest.fn().mockResolvedValue(123456789),
+      } as unknown as Redis;
+
+      const standaloneService = new EscrowAnalyticsService(mockRedis, undefined, undefined);
+
+      const result = await standaloneService.getPaginatedEscrowAnalytics(50);
+      expect(result).toBeDefined();
+      expect(result.data.total).toBe(2);
+      expect(result.pagination.hasMore).toBe(false);
+      expect(result.pagination.cursor).toBe('123456789:escrow-2');
+    });
   });
 });

@@ -265,6 +265,16 @@ describe('RateLimitGuard', () => {
       );
     });
 
+    it('should advertise RateLimit-* headers matching bucket state returned by Redis Lua script', async () => {
+      mockRedis.queueResults([[null, [1, 42]]]); // allowed, 42 remaining
+
+      const { context, response } = mockContext();
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+
+      expect(response.setHeader).toHaveBeenCalledWith('RateLimit-Remaining', '42');
+      expect(response.setHeader).toHaveBeenCalledWith('RateLimit-Reset', '0');
+    });
+
     it('should apply custom decorator values to bucket capacity and refill duration', async () => {
       const module: TestingModule = await Test.createTestingModule({
         providers: [

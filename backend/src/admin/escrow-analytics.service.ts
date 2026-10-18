@@ -151,10 +151,10 @@ export class EscrowAnalyticsService {
     const escrowEntities: Array<{ id: string; status: string; amountXLM: string; createdAt: string }> = [];
     for (const item of rawItems) {
       escrowEntities.push({
-        id: item.id || item.s.id || '',
-        status: item.status || item.s.status || 'pending',
-        amountXLM: item.amountXLM || item.s.amountXLM || '0',
-        createdAt: item.createdAt || item.s.createdAt || new Date().toISOString(),
+        id: item?.id ?? '',
+        status: item?.status ?? 'pending',
+        amountXLM: item?.amountXLM ?? '0',
+        createdAt: item?.createdAt ?? new Date().toISOString(),
       });
     }
 

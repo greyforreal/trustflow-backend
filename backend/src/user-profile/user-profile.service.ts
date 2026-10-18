@@ -15,6 +15,7 @@ import { UserType, UserStatus } from './user-profile.entity';
 import { CreateUserProfileDto, UpdateUserProfileDto, RateUserDto } from './user-profile.dto';
 import { randomUUID } from 'crypto';
 import { config } from '../config/env.config';
+import { parseAmount, normalizeAmount } from '../common/amount';
 
 export interface UserProfile {
   id: string;

@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { Observable, of } from 'rxjs';
-import { catchError, tap } from 'rxjs/operators';
+import { catchError, concatMap } from 'rxjs/operators';
 import { IDEMPOTENT_KEY } from './idempotency-key.decorator';
 import { IdempotencyKeyService } from './idempotency-key.service';
 import { MetricsService } from '../../monitoring/metrics.service';
@@ -117,7 +117,7 @@ export class IdempotencyKeyInterceptor implements NestInterceptor {
     }
 
     return next.handle().pipe(
-      tap(async (responseBody: unknown) => {
+      concatMap(async (responseBody: unknown) => {
         const response = context.switchToHttp().getResponse();
         if (response.statusCode >= 400) {
           await this.idempotencyService.release(endpoint, idempotencyKey);
@@ -131,6 +131,7 @@ export class IdempotencyKeyInterceptor implements NestInterceptor {
             this.capturedHeaders(response),
           );
         }
+        return responseBody;
       }),
       catchError(async err => {
         await this.idempotencyService.release(endpoint, idempotencyKey);

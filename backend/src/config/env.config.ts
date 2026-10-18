@@ -72,8 +72,8 @@ const EnvSchema = z
 
     // Stellar Network Configuration
     STELLAR_NETWORK: z.enum(['TESTNET', 'PUBLIC', 'MAINNET']).default('TESTNET'),
-    STELLAR_HORIZON_URL: z.string().url().default('https://horizon-testnet.stellar.org'),
-    SOROBAN_RPC_URL: z.string().url().default('https://soroban-testnet.stellar.org'),
+    STELLAR_HORIZON_URL: z.string().url().optional(),
+    SOROBAN_RPC_URL: z.string().url().optional(),
     TRUSTFLOW_CONTRACT_ID: z
       .string()
       .regex(/^C[A-Z2-7]{55}$/, 'TRUSTFLOW_CONTRACT_ID must be a valid Stellar contract address')
@@ -155,12 +155,22 @@ const EnvSchema = z
     DB_POOL_MAX: optionalPositiveInt(),
     DB_POOL_IDLE_TIMEOUT_MS: optionalPositiveInt(),
     DB_POOL_CONNECTION_TIMEOUT_MS: optionalPositiveInt(),
-    DB_RETRY_ATTEMPTS: z.coerce.number().int().positive().default(5).describe(
-      'Maximum number of connection retry attempts during pool initialization. Default 5.',
-    ),
-    DB_RETRY_BACKOFF_MS: z.coerce.number().int().positive().default(1000).describe(
-      'Base delay in milliseconds for exponential backoff between connection retries. Default 1000ms.',
-    ),
+    DB_RETRY_ATTEMPTS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(5)
+      .describe(
+        'Maximum number of connection retry attempts during pool initialization. Default 5.',
+      ),
+    DB_RETRY_BACKOFF_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(1000)
+      .describe(
+        'Base delay in milliseconds for exponential backoff between connection retries. Default 1000ms.',
+      ),
 
     SWAGGER_ENABLED: optionalBool().describe(
       'Serve Swagger UI and the OpenAPI JSON; defaults to true outside production, false in production',
@@ -212,6 +222,31 @@ const EnvSchema = z
       .positive()
       .default(1000)
       .describe('Base delay (ms) for exponential backoff in Discord retry logic. Default 1s.'),
+
+    // Platform Balance Monitoring (#730)
+    STELLAR_PLATFORM_ADDRESS: z
+      .preprocess(
+        blankToUndefined,
+        z
+          .string()
+          .regex(/^G[A-Z2-7]{55}$/)
+          .optional(),
+      )
+      .describe('Platform Stellar account address to monitor balance (G... format)'),
+    STELLAR_LOW_BALANCE_THRESHOLD: z.coerce
+      .number()
+      .positive()
+      .default(1)
+      .describe(
+        'Balance threshold (XLM) below which a low-balance warning is triggered. Default 1 XLM.',
+      ),
+    STELLAR_CRITICAL_BALANCE_THRESHOLD: z.coerce
+      .number()
+      .positive()
+      .default(0.5)
+      .describe(
+        'Balance threshold (XLM) below which a critical alert is triggered. Default 0.5 XLM.',
+      ),
 
     // Rate Limiting Configuration
     RATE_LIMIT_ABUSE_WINDOW_SECONDS: z.coerce.number().int().positive().default(300),
@@ -279,18 +314,18 @@ const EnvSchema = z
     IPFS_PROVIDER_TIMEOUT_MS: z.coerce.number().int().positive().default(30000),
 
     // S3-compatible Storage Configuration (avatar uploads)
-    S3_BUCKET: z.preprocess(blankToUndefined, z.string().optional()).describe(
-      'S3 bucket name for avatar uploads. Required in production.',
-    ),
-    S3_REGION: z.preprocess(blankToUndefined, z.string().optional()).describe(
-      'AWS region (or equivalent) for the S3 bucket.',
-    ),
-    S3_ACCESS_KEY_ID: z.preprocess(blankToUndefined, z.string().optional()).describe(
-      'AWS / S3-compatible access key ID.',
-    ),
-    S3_SECRET_ACCESS_KEY: z.preprocess(blankToUndefined, z.string().optional()).describe(
-      'AWS / S3-compatible secret access key.',
-    ),
+    S3_BUCKET: z
+      .preprocess(blankToUndefined, z.string().optional())
+      .describe('S3 bucket name for avatar uploads. Required in production.'),
+    S3_REGION: z
+      .preprocess(blankToUndefined, z.string().optional())
+      .describe('AWS region (or equivalent) for the S3 bucket.'),
+    S3_ACCESS_KEY_ID: z
+      .preprocess(blankToUndefined, z.string().optional())
+      .describe('AWS / S3-compatible access key ID.'),
+    S3_SECRET_ACCESS_KEY: z
+      .preprocess(blankToUndefined, z.string().optional())
+      .describe('AWS / S3-compatible secret access key.'),
     S3_ENDPOINT: z
       .preprocess(blankToUndefined, z.string().url().optional())
       .describe(
@@ -426,17 +461,43 @@ const EnvSchema = z
       issue('JWT_SECRET_PREVIOUS', 'JWT_SECRET_PREVIOUS must differ from JWT_SECRET');
     }
 
+    // Apply network-appropriate defaults for Stellar RPC URLs if not explicitly provided
+    if (!data.STELLAR_HORIZON_URL) {
+      data.STELLAR_HORIZON_URL = isPublicNetwork
+        ? 'https://horizon.stellar.org'
+        : 'https://horizon-testnet.stellar.org';
+    }
+    if (!data.SOROBAN_RPC_URL) {
+      data.SOROBAN_RPC_URL = isPublicNetwork
+        ? 'https://soroban-mainnet.stellar.org'
+        : 'https://soroban-testnet.stellar.org';
+    }
+
+    // Validate that URLs match the selected network after defaults are applied
     if (isPublicNetwork) {
-      if (!data.STELLAR_HORIZON_URL || /testnet/i.test(data.STELLAR_HORIZON_URL)) {
+      if (/testnet/i.test(data.STELLAR_HORIZON_URL)) {
         issue(
           'STELLAR_HORIZON_URL',
           'STELLAR_HORIZON_URL must point to the PUBLIC network when STELLAR_NETWORK is PUBLIC or MAINNET',
         );
       }
-      if (!data.SOROBAN_RPC_URL || /testnet/i.test(data.SOROBAN_RPC_URL)) {
+      if (/testnet/i.test(data.SOROBAN_RPC_URL)) {
         issue(
           'SOROBAN_RPC_URL',
           'SOROBAN_RPC_URL must point to the PUBLIC network when STELLAR_NETWORK is PUBLIC or MAINNET',
+        );
+      }
+    } else {
+      if (/mainnet|public/i.test(data.STELLAR_HORIZON_URL)) {
+        issue(
+          'STELLAR_HORIZON_URL',
+          'STELLAR_HORIZON_URL must point to the TESTNET when STELLAR_NETWORK is TESTNET',
+        );
+      }
+      if (/mainnet|public/i.test(data.SOROBAN_RPC_URL)) {
+        issue(
+          'SOROBAN_RPC_URL',
+          'SOROBAN_RPC_URL must point to the TESTNET when STELLAR_NETWORK is TESTNET',
         );
       }
     }
